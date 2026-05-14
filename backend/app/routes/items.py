@@ -484,7 +484,8 @@ async def get_ai_recommendation(item_id: str, user=Depends(get_current_user)):
             }
         ).json()
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Search service error")
+        print("Error calling search service:", e)
+        return {"items": []}
 
     results = res.get("results", [])
 
