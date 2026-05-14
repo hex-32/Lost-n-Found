@@ -906,7 +906,7 @@ function Home() {
                   style={{ transform: "translateY(-4%)" }}
                 >
                   {AIitems
-                          .filter((item) => item.status !== "resolved")
+                          .filter((item) => item.status !== "resolved" && item.probability > 0)
                           .sort((a, b) => b.probability - a.probability)
                           .map((item) => (
                     <ItemCard key={item._id} item={item} probability={item.probability} onClick={() => setSelectedItem2(item)} />
