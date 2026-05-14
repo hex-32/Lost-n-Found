@@ -88,7 +88,7 @@ async def create_item(
             )
         except Exception as e:
             print("Qdrant upsert error:", e)
-            raise HTTPException(status_code=500, detail="Failed to store item vector")
+            # raise HTTPException(status_code=500, detail="Failed to store item vector")
 
     try:
         text_vector = requests.post(
@@ -99,10 +99,9 @@ async def create_item(
     except Exception as e:
         print("Error saving item vector to Qdrant:", e)
         if item_id:
-            await items_collection.delete_one({"_id": ObjectId(item_id)})
             delete_item_qdrant(str(qid))  # Rollback Qdrant entry if exists
-            print("Rollback delete result")
-            raise HTTPException(status_code=500, detail="Failed to create item")
+            print("Couldn't save vector, rolled back AI Entry in Qdrant")
+            
 
     return {
         "message": "Item created successfully",
@@ -209,6 +208,10 @@ async def update_item(
     # OWNERSHIP CHECK
     if item["owner_id"] != str(user["_id"]):
         raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # keep track of existing qid (if any) and ensure we have a qid to upsert in Qdrant
+    original_qid = item.get("qid")
+    qid = original_qid or str(uuid.uuid4())
 
     update_data = {
         "title": title,
@@ -224,10 +227,57 @@ async def update_item(
         image_url = upload_image(image.file)
         update_data["image_url"] = image_url
 
+    # If we generated a new qid, persist it to the document
+    if not original_qid:
+        update_data["qid"] = qid
+
+    # update the existing document (don't re-insert)
     await items_collection.update_one(
         {"_id": ObjectId(item_id)},
         {"$set": update_data}
     )
+
+    # If there was an old qid, try to remove its Qdrant entry before upserting the new vector
+    if original_qid:
+        try:
+            delete_item_qdrant(original_qid)  # Delete from Qdrant using original qid
+        except Exception as e:
+            print("Error deleting from Qdrant:", e)
+
+    text_input = f"{title}. {description}. {category}"
+
+    async def store_in_qdrant(qid, item_id, text_vector, type, category, user):
+        try:
+            upsert_item(   # upsert_item is synchronous
+                qid=qid,
+                text_vector=text_vector,
+                # image_vector=image_vector,
+                payload={
+                    "mongo_id": item_id,
+                    "type": type,
+                    "status": status,
+                    "category": category,
+                    "owner_id": str(user["_id"]),
+                }
+            )
+        except Exception as e:
+            print("Qdrant upsert error:", e)
+            raise HTTPException(status_code=500, detail="Failed to store item vector")
+
+    try:
+        text_vector = requests.post(
+            TEXT_EMBED_URL,
+            json={"text": text_input}
+        ).json()["vector"]
+        # item_id is already the string id of the existing document
+        await store_in_qdrant(qid, item_id, text_vector, type, category, user)
+    except Exception as e:
+        print("Error saving item vector to Qdrant:", e)
+        # attempt best-effort rollback of the Qdrant entry
+        try:
+            delete_item_qdrant(str(qid))
+        except Exception as e2:
+            print("Error rolling back Qdrant entry:", e2)
 
     return {"message": "Item updated successfully"}
 
